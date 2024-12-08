@@ -1,0 +1,5 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "native/rezmq_native/Cargo.toml"
+    ]
+}
