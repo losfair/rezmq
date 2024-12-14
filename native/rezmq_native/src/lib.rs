@@ -514,8 +514,13 @@ fn worker(ctx: ResourceArc<ContextResource>, mut rx: UnixStream) {
           )
         };
         if ret < 0 {
-          respond(Err(unsafe { bindings::zmq_errno() }));
-          reading_to_remove.insert(*socket_id);
+          let errno = unsafe { bindings::zmq_errno() };
+
+          // spurious EAGAIN
+          if errno != libc::EAGAIN {
+            respond(Err(errno));
+            reading_to_remove.insert(*socket_id);
+          }
         } else {
           let more = msg.get_more();
           buf.push(msg);
