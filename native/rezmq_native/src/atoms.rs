@@ -1,6 +1,7 @@
 rustler::atoms! {
     ok,
     error,
+    nil,
 
     not_found,
     already_reading,

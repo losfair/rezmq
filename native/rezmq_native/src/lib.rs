@@ -23,6 +23,7 @@ use nix::{
 };
 use once_cell::sync::OnceCell;
 use rustler::{
+  types::tuple::{get_tuple, make_tuple},
   Binary, Encoder, Env, LocalPid, NewBinary, OwnedBinary, OwnedEnv, Reference, Resource,
   ResourceArc, Term,
 };
@@ -79,6 +80,7 @@ enum Req {
     listener: LocalPid,
     token: OwnedBinary,
     id: u64,
+    metadata_properties: Option<Vec<CString>>,
   },
   Bind {
     id: u64,
@@ -354,16 +356,32 @@ fn socket_connect(
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
-fn socket_start_read(
+fn socket_start_read<'a>(
+  env: Env<'a>,
   socket: ResourceArc<SocketResource>,
   listener: LocalPid,
-  token: Reference,
+  token: Reference<'a>,
+  metadata_properties: Term<'a>,
 ) -> Result<rustler::Atom, rustler::Error> {
+  let metadata_properties = if metadata_properties == atoms::nil().to_term(env) {
+    None
+  } else {
+    Some(
+      get_tuple(metadata_properties)?
+        .into_iter()
+        .map(|x| {
+          Binary::from_term(x)
+            .and_then(|x| CString::new(&x[..]).map_err(|_| rustler::Error::BadArg))
+        })
+        .collect::<Result<Vec<_>, _>>()?,
+    )
+  };
   if let Err(_) = socket.tx.send(Box::new(Packet {
     req: Req::StartRead {
       listener,
       token: token.to_binary(),
       id: socket.id,
+      metadata_properties,
     },
   })) {
     return Err(rustler::Error::RaiseAtom("socket_worker_error"));
@@ -439,10 +457,17 @@ impl Drop for OwnedSocket {
 }
 
 fn worker(ctx: ResourceArc<ContextResource>, mut rx: UnixStream) {
+  struct Reading {
+    receiver: LocalPid,
+    token: OwnedBinary,
+    buffer: Vec<Message>,
+    metadata_properties: Option<HashSet<CString>>,
+  }
+
   let mut env = OwnedEnv::new();
   let mut next_socket_id = 1u64;
   let mut sockets: BTreeMap<u64, OwnedSocket> = BTreeMap::new();
-  let mut reading: BTreeMap<u64, (LocalPid, OwnedBinary, Vec<Message>)> = BTreeMap::new();
+  let mut reading: BTreeMap<u64, Reading> = BTreeMap::new();
   let mut writing: BTreeMap<u64, VecDeque<(Message, bool)>> = BTreeMap::new();
 
   loop {
@@ -478,14 +503,14 @@ fn worker(ctx: ResourceArc<ContextResource>, mut rx: UnixStream) {
 
     let mut reading_to_remove: HashSet<u64> = HashSet::new();
 
-    for (item, (socket_id, (caller, token, buf))) in poll_items[1..1 + reading.len()]
+    for (item, (socket_id, reading)) in poll_items[1..1 + reading.len()]
       .iter()
       .zip(reading.iter_mut())
     {
       let mut respond = |data: Result<Vec<Message>, i32>| {
-        let _ = env.send_and_clear(caller, |env| {
+        let _ = env.send_and_clear(&reading.receiver, |env| {
           // safe because term is created by us
-          let token = unsafe { env.binary_to_term_trusted(&token).unwrap().0 };
+          let token = unsafe { env.binary_to_term_trusted(&reading.token).unwrap().0 };
 
           match data {
             Ok(msg) => {
@@ -495,7 +520,26 @@ fn worker(ctx: ResourceArc<ContextResource>, mut rx: UnixStream) {
                 b.copy_from_slice(&msg[..]);
                 encoded.push(Binary::from(b));
               }
-              (atoms::rezmq_msg(), token, atoms::ok(), encoded).encode(env)
+
+              if let Some(metadata_properties) = &reading.metadata_properties {
+                let last = msg.last().unwrap();
+                let metadata_properties = make_tuple(
+                  env,
+                  &metadata_properties
+                    .iter()
+                    .map(|x| last.gets_cstr(x).encode(env))
+                    .collect::<Vec<_>>(),
+                );
+                (
+                  atoms::rezmq_msg(),
+                  token,
+                  atoms::ok(),
+                  (encoded, metadata_properties),
+                )
+                  .encode(env)
+              } else {
+                (atoms::rezmq_msg(), token, atoms::ok(), encoded).encode(env)
+              }
             }
             Err(code) => (atoms::rezmq_msg(), token, atoms::error(), code).encode(env),
           }
@@ -523,9 +567,9 @@ fn worker(ctx: ResourceArc<ContextResource>, mut rx: UnixStream) {
           }
         } else {
           let more = msg.get_more();
-          buf.push(msg);
+          reading.buffer.push(msg);
           if !more {
-            respond(Ok(std::mem::take(buf)));
+            respond(Ok(std::mem::take(&mut reading.buffer)));
           }
         }
       }
@@ -670,6 +714,7 @@ fn worker(ctx: ResourceArc<ContextResource>, mut rx: UnixStream) {
           listener,
           token,
           id,
+          metadata_properties,
         } => {
           if reading.contains_key(&id) {
             let _ = env.send_and_clear(&listener, |env| {
@@ -692,7 +737,15 @@ fn worker(ctx: ResourceArc<ContextResource>, mut rx: UnixStream) {
               )
             });
           } else {
-            reading.insert(id, (listener, token, Vec::new()));
+            reading.insert(
+              id,
+              Reading {
+                receiver: listener,
+                token,
+                buffer: Vec::new(),
+                metadata_properties: metadata_properties.map(|x| x.into_iter().collect()),
+              },
+            );
           }
         }
         Req::AbortRead { id } => {

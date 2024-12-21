@@ -47,9 +47,14 @@ defmodule Rezmq do
     Rezmq.Native.socket_connect(socket, address)
   end
 
-  @spec socket_start_read(Rezmq.Native.native_socket(), pid(), reference()) :: :ok
-  def socket_start_read(socket, listener, token) do
-    Rezmq.Native.socket_start_read(socket, listener, token)
+  @spec socket_start_read(
+          Rezmq.Native.native_socket(),
+          pid(),
+          reference(),
+          tuple() | nil
+        ) :: :ok
+  def socket_start_read(socket, listener, token, metadata_properties \\ nil) do
+    Rezmq.Native.socket_start_read(socket, listener, token, metadata_properties)
   end
 
   @spec socket_abort_read(Rezmq.Native.native_socket()) :: :ok

@@ -30,8 +30,9 @@ defmodule Rezmq.Native do
   @spec socket_connect(native_socket(), binary()) :: :ok | {:error, integer()}
   def socket_connect(_socket, _address), do: :erlang.nif_error(:nif_not_loaded)
 
-  @spec socket_start_read(native_socket(), pid(), reference()) :: :ok
-  def socket_start_read(_socket, _listener, _token), do: :erlang.nif_error(:nif_not_loaded)
+  @spec socket_start_read(native_socket(), pid(), reference(), tuple() | nil) :: :ok
+  def socket_start_read(_socket, _listener, _token, _metadata_properties),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   @spec socket_abort_read(native_socket()) :: :ok
   def socket_abort_read(_socket), do: :erlang.nif_error(:nif_not_loaded)

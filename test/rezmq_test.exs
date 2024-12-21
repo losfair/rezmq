@@ -96,4 +96,49 @@ defmodule RezmqTest do
 
     nil
   end
+
+  test "message metadata" do
+    ctx = Rezmq.context_new()
+    worker = Rezmq.worker_start(ctx)
+    {:ok, req} = Rezmq.socket_create(worker, :req)
+    {:ok, rep} = Rezmq.socket_create(worker, :rep)
+
+    # message metadata doesn't work with inproc
+    tempfile = "ipc:///tmp/rezmq_message_metadata_test.sock"
+    :ok = Rezmq.socket_bind(rep, tempfile)
+    :ok = Rezmq.socket_connect(req, tempfile)
+
+    child =
+      spawn_link(fn ->
+        :ok = Rezmq.socket_start_read(rep, self(), rep, {"Socket-Type"})
+
+        Stream.repeatedly(fn ->
+          receive do
+            {:rezmq_msg, ^rep, :ok, {["hello"], {x}}} ->
+              :ok = Rezmq.socket_write(rep, [inspect(x)])
+              nil
+
+            :exit ->
+              Process.exit(self(), :normal)
+
+            x ->
+              raise "unexpected message: #{inspect(x)}"
+          end
+        end)
+        |> Enum.each(& &1)
+      end)
+
+    :ok = Rezmq.socket_start_read(req, self(), req)
+    :ok = Rezmq.socket_write(req, ["hello"])
+
+    md_entry =
+      receive do
+        {:rezmq_msg, ^req, :ok, [x]} -> x
+        x -> raise "unexpected message: #{inspect(x)}"
+      end
+
+    assert md_entry == "\"REQ\""
+    send(child, :exit)
+    nil
+  end
 end

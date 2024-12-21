@@ -4,6 +4,7 @@
 use libc::size_t;
 
 use std::ffi;
+use std::ffi::CStr;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::os::raw::c_void;
@@ -145,10 +146,13 @@ impl Message {
   ///
   /// This is considered a bug in the bindings, and will be fixed with the
   /// next API-breaking release.
-  pub fn gets<'a>(&'a mut self, property: &str) -> Option<&'a str> {
+  pub fn gets<'a>(&'a self, property: &str) -> Option<&'a str> {
     let c_str = ffi::CString::new(property.as_bytes()).unwrap();
+    self.gets_cstr(c_str.as_c_str())
+  }
 
-    let value = unsafe { super::bindings::zmq_msg_gets(&self.msg, c_str.as_ptr()) };
+  pub fn gets_cstr<'a>(&'a self, property: &CStr) -> Option<&'a str> {
+    let value = unsafe { super::bindings::zmq_msg_gets(&self.msg, property.as_ptr()) };
 
     if value.is_null() {
       None
